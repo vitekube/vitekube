@@ -385,6 +385,10 @@ test("the app survives losing its worker", async ({ k8s }) => {
 });
 ```
 
+Call `worker.restore()` to bring it back sooner. It waits for the rollout, and it's safe to call twice.
+
+Scaling down returns before the pods have gone, and a pod that is still terminating can pick up work. If your test needs the workload truly gone, wait for its pods to exit first.
+
 If putting shared state back fails, the cluster is flagged as unusable. Later tests stop and tell you why, rather than failing in confusing ways.
 
 ## Commands
