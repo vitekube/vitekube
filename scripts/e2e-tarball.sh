@@ -8,7 +8,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 npm pack --silent --pack-destination "$work" >/dev/null
-cp examples/quick-start/*.ts examples/quick-start/tsconfig.json "$work"
+cp examples/quick-start/*.ts examples/quick-start/*.yaml examples/quick-start/tsconfig.json "$work"
 # Uses a custom matcher, so both the published types and the matcher at runtime are checked.
 cp examples/hello/hello.test.ts "$work"
 cd "$work"
