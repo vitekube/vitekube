@@ -308,8 +308,10 @@ export const defineK8sGlobalSetup =
 
       log(`watch the cluster with: KUBECONFIG=${target.kubeconfigPath} k9s --context ${target.context}`);
       project.provide("vitekubeTarget", target);
+      project.provide("vitekubeRoot", project.config.root);
 
       const k8s = createKubernetesClient(target, {
+        rootDir: project.config.root,
         onEnvironmentDamaged: (reason) => stateStore.markUnusable(reason),
       });
       if (options.environment) {

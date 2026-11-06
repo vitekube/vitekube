@@ -33,6 +33,21 @@ const replicasOf = async (k8s: KubernetesClient, namespace: string, name: string
   return found?.spec?.replicas;
 };
 
+describe("applyFile", () => {
+  const configMap = (namespace: string, name: string) => ({ apiVersion: "v1", kind: "ConfigMap", namespace, name });
+
+  test("applies every document in a file to the test's namespace, from Vitest's root", async ({ k8s, namespace }) => {
+    await k8s.applyFile(namespace, "fixtures/config-maps.yaml");
+
+    expect(await k8s.get(configMap(namespace, "first"))).not.toBeNull();
+    expect(await k8s.get(configMap(namespace, "second"))).not.toBeNull();
+  });
+
+  test("fails when the file does not exist", async ({ k8s, namespace }) => {
+    await expect(k8s.applyFile(namespace, "fixtures/no-such-file.yaml")).rejects.toThrow("no-such-file.yaml");
+  });
+});
+
 describe("port-forward", () => {
   test("a forward opened in global setup reaches tests", async () => {
     const response = await fetch(inject("sharedWebUrl"));

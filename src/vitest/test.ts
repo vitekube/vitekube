@@ -77,11 +77,13 @@ export const test = base
   // oxlint-disable-next-line no-empty-pattern -- Vitest requires object destructuring here.
   .extend("fileK8s", { scope: "file" }, ({}) =>
     createKubernetesClient(clusterTarget(), {
+      rootDir: inject("vitekubeRoot"),
       onEnvironmentDamaged: (reason) => stateStore().markUnusable(reason),
     })
   )
   .extend("k8s", ({ signal }) =>
     createKubernetesClient(clusterTarget(), {
+      rootDir: inject("vitekubeRoot"),
       onEnvironmentDamaged: (reason) => stateStore().markUnusable(reason),
       signal,
     })
