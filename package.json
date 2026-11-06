@@ -33,6 +33,7 @@
   "scripts": {
     "prepare": "vp config --no-agent && vp pack",
     "e2e": "vp test run --config e2e/vitest.config.ts",
+    "e2e:smoke": "pnpm --dir examples/hello run e2e",
     "e2e:all": "sh scripts/e2e-all.sh",
     "e2e:tarball": "sh scripts/e2e-tarball.sh"
   },

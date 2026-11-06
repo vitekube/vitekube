@@ -387,11 +387,12 @@ vp install          # also builds dist/, which the examples use
 vp pack             # rebuild dist/
 vp check            # format, lint and types
 vp test             # unit tests, no Docker needed
+pnpm run e2e:smoke  # one example, to show that a cluster starts and runs a test
 pnpm run e2e:all    # contract tests and examples, on real k3d clusters
 pnpm run e2e:tarball # the packed package, in a project outside this workspace
 ```
 
-Git hooks run the staged-file check on commit, and `vp pack`, `vp check` and `vp test` on push. The cluster tests run in CI.
+Git hooks run the staged-file check on commit, and `vp pack`, `vp check` and `vp test` on push. In CI, branches and pull requests run the smoke test, and `main` and releases run the full suite.
 
 ## License
 

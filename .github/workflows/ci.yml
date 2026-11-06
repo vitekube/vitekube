@@ -2,8 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
+
+# A newer push replaces a run in progress, except on main, where the full suite always finishes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -14,6 +18,8 @@ env:
 jobs:
   checks:
     name: Checks on Node ${{ matrix.node }}
+    # A branch in this repository already runs on push, so only pull requests from forks run here.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -30,8 +36,26 @@ jobs:
       - run: vp check
       - run: vp test
 
+  smoke:
+    name: Cluster smoke test
+    # Everything except main: one example, to show that a cluster starts and runs a test.
+    if: >-
+      github.ref != 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: voidzero-dev/setup-vp@v1.22.0
+        with:
+          cache: true
+      - uses: jdx/mise-action@v3
+      - run: vp pack
+      - run: pnpm run e2e:smoke
+
   clusters:
     name: Contract tests and examples
+    # The full suite runs on main, and again in the release workflow.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
