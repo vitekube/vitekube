@@ -1,6 +1,6 @@
 #!/bin/sh
 # Installs the packed package in a new project outside this workspace, type-checks the quick-start
-# example against it, and runs that example on a real k3d cluster.
+# and hello tests against it, and runs them on a real k3d cluster.
 set -eu
 
 root="$(pwd)"
@@ -9,6 +9,8 @@ trap 'rm -rf "$work"' EXIT
 
 npm pack --silent --pack-destination "$work" >/dev/null
 cp examples/quick-start/*.ts examples/quick-start/tsconfig.json "$work"
+# Uses a custom matcher, so both the published types and the matcher at runtime are checked.
+cp examples/hello/hello.test.ts "$work"
 cd "$work"
 sed -i.bak 's/name: "vitekube-quick-start"/name: "vitekube-tarball"/; s/, reuse: true//' k8s.setup.ts
 rm k8s.setup.ts.bak
