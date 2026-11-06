@@ -9,6 +9,8 @@ import {
   type V1Pod,
 } from "@kubernetes/client-node";
 
+import { resolve } from "node:path";
+
 import { createHelmObserver, type HelmObserver } from "./helm.ts";
 import { startPortForward, type PortForward, type PortForwardOptions } from "./port-forward.ts";
 import { run, runChecked, type RunResult } from "./process.ts";
@@ -119,6 +121,8 @@ export type TemporaryScale = {
 export type ClientOptions = {
   /** Cancels in-flight requests, commands and waits, for example when a test times out. */
   signal?: AbortSignal;
+  /** What relative `applyFile` paths start from. Defaults to the current directory. */
+  rootDir?: string;
   /** Called when shared cluster state could not be restored, so later tests can stop instead of failing misleadingly. */
   onEnvironmentDamaged?: (reason: string) => Promise<void>;
 };
@@ -139,6 +143,8 @@ export type KubernetesClient = {
   /** Treats an already absent resource as deleted. */
   delete: (ref: ResourceRef) => Promise<void>;
   apply: (namespace: string, manifest: object, options?: { private?: boolean }) => Promise<void>;
+  /** Applies a YAML or JSON file, which may hold several documents. Tests resolve relative paths from Vitest's root. */
+  applyFile: (namespace: string, path: string, options?: { private?: boolean }) => Promise<void>;
   waitForJobCompletion: (ref: NamedRef, options: WaitOptions) => Promise<V1Job>;
   waitForPodReady: (ref: NamedRef, options: WaitOptions) => Promise<V1Pod>;
   waitForRollout: (ref: NamedRef, options: WaitOptions) => Promise<V1Deployment>;
@@ -161,7 +167,7 @@ const DEFAULT_RESTORE_TIMEOUT_MS = 120_000;
 
 /** Every call names its kubeconfig and context, so the user's current context never matters. */
 export const createKubernetesClient = (target: KubernetesTarget, options: ClientOptions = {}): KubernetesClient => {
-  const { signal } = options;
+  const { signal, rootDir = process.cwd() } = options;
   const config = new KubeConfig();
   config.loadFromFile(target.kubeconfigPath);
   if (!config.getContextObject(target.context)) {
@@ -282,6 +288,15 @@ export const createKubernetesClient = (target: KubernetesTarget, options: Client
     apply: async (namespace, manifest, applyOptions = {}) => {
       await runChecked("kubectl", [...scope, "apply", "--namespace", namespace, "--filename", "-"], {
         input: JSON.stringify(manifest),
+        timeoutMs: KUBECTL_TIMEOUT_MS,
+        signal,
+        private: applyOptions.private,
+      });
+    },
+
+    applyFile: async (namespace, path, applyOptions = {}) => {
+      const file = resolve(rootDir, path);
+      await runChecked("kubectl", [...scope, "apply", "--namespace", namespace, "--filename", file], {
         timeoutMs: KUBECTL_TIMEOUT_MS,
         signal,
         private: applyOptions.private,

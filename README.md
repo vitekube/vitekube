@@ -6,17 +6,20 @@ Write a normal Vitest test. Run it on a real cluster. Rerun it, and only what yo
 
 ```ts
 test("the web server answers", async ({ k8s, namespace }) => {
-  await k8s.apply(namespace, web);
+  await k8s.applyFile(namespace, "web.yaml");
   await k8s.waitForRollout({ namespace, name: "web" }, { timeoutMs: 120_000 });
 
-  await using forward = await k8s.portForward({ namespace, resource: "service/web", remotePort: 80 });
-  const response = await fetch(forward.url);
+  await using web = await k8s.portForward({
+    namespace,
+    resource: "service/web",
+    remotePort: 80,
+  });
 
-  expect(response.status).toBe(200);
+  expect((await fetch(web.url)).status).toBe(200);
 });
 ```
 
-That's a real Deployment, a real Service and a real HTTP request. No mocks. No fake API server. No shell scripts wrapped around `kubectl`. The [quick start](#quick-start) has the full file.
+That's a real Deployment and Service, from your own YAML, answering a real HTTP request. No mocks. No fake API server. No shell scripts wrapped around `kubectl`.
 
 > **Status:** early. A community project, not affiliated with Vitest, Vite or the Kubernetes project.
 
@@ -38,6 +41,19 @@ And it's careful with everything else:
 - **Your kubectl context is never touched.** vitekube uses a private kubeconfig, and you always name the cluster.
 - **It won't harm a cluster it doesn't own.** It refuses to reuse or delete anything it didn't create.
 - **Secrets stay out of your output.** Mark a value as sensitive and it's removed from everything captured, even its base64 form.
+
+## What `test` gives you
+
+Ask for what you need by name. vitekube sets it up and cleans up after it:
+
+| Ask for     | You get                                                           |
+| ----------- | ----------------------------------------------------------------- |
+| `k8s`       | Apply, wait, exec, read logs and port-forward on the real cluster |
+| `namespace` | A new namespace for this test, deleted afterward                  |
+| `scope`     | Cleanup functions that run in reverse order                       |
+| `evidence`  | Extra failure output, and control over what counts as secret      |
+
+[See everything your tests get](#everything-your-tests-get).
 
 ## Quick start
 
@@ -76,49 +92,49 @@ export default defineConfig({
 
 `K8sReporter` is Vitest's default output with readable times, `38.2s` rather than `38196ms`, and it fails a run whose `-t` filter matches nothing.
 
-**3. Write a test** in `web.test.ts`:
+**3. Add your YAML** in `web.yaml`:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: web }
+spec:
+  selector: { matchLabels: { app: web } }
+  template:
+    metadata: { labels: { app: web } }
+    spec:
+      containers:
+        - { name: web, image: nginx:1.29-alpine }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: web }
+spec:
+  selector: { app: web }
+  ports: [{ port: 80 }]
+```
+
+**4. Write a test** in `web.test.ts`:
 
 ```ts
 import { test } from "vitekube";
 import { expect } from "vitest";
 
-const web = {
-  apiVersion: "v1",
-  kind: "List",
-  items: [
-    {
-      apiVersion: "apps/v1",
-      kind: "Deployment",
-      metadata: { name: "web" },
-      spec: {
-        selector: { matchLabels: { app: "web" } },
-        template: {
-          metadata: { labels: { app: "web" } },
-          spec: { containers: [{ name: "web", image: "nginx:1.29-alpine", ports: [{ containerPort: 80 }] }] },
-        },
-      },
-    },
-    {
-      apiVersion: "v1",
-      kind: "Service",
-      metadata: { name: "web" },
-      spec: { selector: { app: "web" }, ports: [{ port: 80 }] },
-    },
-  ],
-};
-
 test("the web server answers", async ({ k8s, namespace }) => {
-  await k8s.apply(namespace, web);
+  await k8s.applyFile(namespace, "web.yaml");
   await k8s.waitForRollout({ namespace, name: "web" }, { timeoutMs: 120_000 });
 
-  await using forward = await k8s.portForward({ namespace, resource: "service/web", remotePort: 80 });
-  const response = await fetch(forward.url);
+  await using web = await k8s.portForward({
+    namespace,
+    resource: "service/web",
+    remotePort: 80,
+  });
 
-  expect(response.status).toBe(200);
+  expect((await fetch(web.url)).status).toBe(200);
 });
 ```
 
-**4. Run it:**
+**5. Run it:**
 
 ```sh
 npx vitest run
@@ -127,6 +143,58 @@ npx vitest run
 The first run creates the cluster. With `reuse: true`, every run after that starts straight away. Leave out `reuse` to get a new cluster each run, deleted at the end.
 
 Each run also prints a command for watching the cluster live in `k9s`.
+
+## Everything your tests get
+
+`test` from `vitekube` is Vitest's `test` with these fixtures. Use only the ones you ask for:
+
+| Fixture               | What it gives you                                                                    |
+| --------------------- | ------------------------------------------------------------------------------------ |
+| `k8s`                 | A client for this cluster, canceled when the test times out                          |
+| `namespace`           | A new namespace, deleted after the test                                              |
+| `scope`               | Cleanup functions, run in reverse order, each with its own time limit                |
+| `evidence`            | Extra failure output, and control over what counts as sensitive                      |
+| `fileK8s`             | A client shared by a whole file, for file-scoped fixtures                            |
+| `markClusterUnusable` | Stops later tests with a reason, when your own cleanup couldn't restore shared state |
+
+Add your own, as you would with any Vitest test:
+
+```ts
+import { test as base } from "vitekube";
+
+export const test = base.extend("api", async ({ k8s, scope }) => {
+  const forward = await k8s.portForward({ namespace: "default", resource: "service/api", remotePort: 80 });
+  scope.defer(() => forward.close());
+  return forward.url;
+});
+```
+
+### The `k8s` client
+
+| Group                  | Methods                                                                     |
+| ---------------------- | --------------------------------------------------------------------------- |
+| **Read and write**     | `get`, `list`, `create`, `replace`, `patch`, `delete`, `apply`, `applyFile` |
+| **Wait for a result**  | `waitForJobCompletion`, `waitForPodReady`, `waitForRollout`                 |
+| **Interact**           | `exec`, `logs`, `portForward`                                               |
+| **Simulate an outage** | `scaleTemporarily`                                                          |
+| **Helm**               | `helm.status`                                                               |
+
+`apply` takes an object. `applyFile` takes a YAML file, relative to Vitest's root, and puts it in the namespace you pass.
+
+Two details that are easy to get wrong by hand are built in:
+
+- **`get` tells absence from failure.** It returns `null` only when the API server confirms the resource doesn't exist. A permission or connection error throws, so a broken cluster can't pass a "was it deleted?" check.
+- **Waits stop when the answer is known.** A failed Job throws straight away, without waiting out the timeout.
+
+### Matchers
+
+```ts
+expect(job).toHaveCondition("Complete");
+expect(pod).toBePodReady();
+expect(pod).toHaveContainerState("main", "running");
+```
+
+Failure messages describe conditions and states, not the whole object, so a Pod's environment variables don't land in your test output.
 
 ## Works great with AI agents
 
@@ -250,70 +318,6 @@ TypeError: fetch failed
 
 Want a closer look? `VITEKUBE_KEEP_ON_FAILURE=1 npx vitest run` keeps the failed test's namespace and prints the command to inspect it. The next run removes it.
 
-## Test what happens when things break
-
-`scaleTemporarily` takes a workload down and puts it back when the block ends, even if the test throws or times out:
-
-```ts
-test("the app survives losing its worker", async ({ k8s }) => {
-  await using worker = await k8s.scaleTemporarily({ namespace: "default", name: "worker" }, 0);
-
-  // The worker is down here. Check how the rest of the system behaves.
-});
-```
-
-If putting shared state back fails, the cluster is flagged as unusable. Later tests stop and tell you why, rather than failing in confusing ways.
-
-## What your tests get
-
-`test` from `vitekube` is Vitest's `test` with these fixtures. Use only the ones you ask for:
-
-| Fixture               | What it gives you                                                                    |
-| --------------------- | ------------------------------------------------------------------------------------ |
-| `k8s`                 | A client for this cluster, canceled when the test times out                          |
-| `namespace`           | A new namespace, deleted after the test                                              |
-| `scope`               | Cleanup functions, run in reverse order, each with its own time limit                |
-| `evidence`            | Extra failure output, and control over what counts as sensitive                      |
-| `fileK8s`             | A client shared by a whole file, for file-scoped fixtures                            |
-| `markClusterUnusable` | Stops later tests with a reason, when your own cleanup couldn't restore shared state |
-
-Add your own, as you would with any Vitest test:
-
-```ts
-import { test as base } from "vitekube";
-
-export const test = base.extend("api", async ({ k8s, scope }) => {
-  const forward = await k8s.portForward({ namespace: "default", resource: "service/api", remotePort: 80 });
-  scope.defer(() => forward.close());
-  return forward.url;
-});
-```
-
-### The `k8s` client
-
-| Group                  | Methods                                                        |
-| ---------------------- | -------------------------------------------------------------- |
-| **Read and write**     | `get`, `list`, `create`, `replace`, `patch`, `delete`, `apply` |
-| **Wait for a result**  | `waitForJobCompletion`, `waitForPodReady`, `waitForRollout`    |
-| **Interact**           | `exec`, `logs`, `portForward`                                  |
-| **Simulate an outage** | `scaleTemporarily`                                             |
-| **Helm**               | `helm.status`                                                  |
-
-Two details that are easy to get wrong by hand are built in:
-
-- **`get` tells absence from failure.** It returns `null` only when the API server confirms the resource doesn't exist. A permission or connection error throws, so a broken cluster can't pass a "was it deleted?" check.
-- **Waits stop when the answer is known.** A failed Job throws straight away, without waiting out the timeout.
-
-### Matchers
-
-```ts
-expect(job).toHaveCondition("Complete");
-expect(pod).toBePodReady();
-expect(pod).toHaveContainerState("main", "running");
-```
-
-Failure messages describe conditions and states, not the whole object, so a Pod's environment variables don't land in your test output.
-
 ### Keeping secrets out of the output
 
 ```ts
@@ -327,6 +331,20 @@ test("rotates the token", async ({ evidence }) => {
 ```
 
 Use `restrict()` when a secret could appear in a form `markSensitive` can't recognize, such as split across lines. Vitest's own diffs still print whatever you pass to `expect`, so compare secrets as booleans: `expect(actual === token).toBe(true)`.
+
+## Test what happens when things break
+
+`scaleTemporarily` takes a workload down and puts it back when the block ends, even if the test throws or times out:
+
+```ts
+test("the app survives losing its worker", async ({ k8s }) => {
+  await using worker = await k8s.scaleTemporarily({ namespace: "default", name: "worker" }, 0);
+
+  // The worker is down here. Check how the rest of the system behaves.
+});
+```
+
+If putting shared state back fails, the cluster is flagged as unusable. Later tests stop and tell you why, rather than failing in confusing ways.
 
 ## Commands
 
