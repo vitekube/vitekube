@@ -89,7 +89,8 @@ jobs:
         run: |
           git add package.json
           git commit -m "chore: release vitekube v${{ steps.package.outputs.version }}"
-          git tag "v${{ steps.package.outputs.version }}"
+          # Annotated, because `git push --follow-tags` skips lightweight tags.
+          git tag -a "v${{ steps.package.outputs.version }}" -m "vitekube v${{ steps.package.outputs.version }}"
 
       # Pushed first: a failed publish then only skips a version number, while a failed push after
       # publishing would leave a release with no commit or tag, and the next run would collide with it.

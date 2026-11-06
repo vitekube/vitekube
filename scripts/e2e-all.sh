@@ -2,6 +2,9 @@
 # Contract tests and every example, each on a real k3d cluster reached through a private kubeconfig.
 set -eu
 
+# Also on failure, so a failed run leaves no cluster behind.
+trap 'sh scripts/e2e-clean.sh' EXIT
+
 pnpm run e2e
 pnpm --dir examples/hello run e2e
 pnpm --dir examples/quick-start run e2e
