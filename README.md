@@ -55,6 +55,57 @@ Ask for what you need by name. vitekube sets it up and cleans up after it:
 
 [See everything your tests get](#everything-your-tests-get).
 
+### Make it yours
+
+The real magic: wrap your whole system in one word. `.extend` adds your own fixture, and any test can ask for it by name:
+
+```ts
+// fixtures.ts
+import { test as base } from "vitekube";
+
+export const test = base.extend("web", async ({ k8s, namespace }, { onCleanup }) => {
+  await k8s.applyFile(namespace, "web.yaml");
+  await k8s.waitForRollout({ namespace, name: "web" }, { timeoutMs: 120_000 });
+
+  const forward = await k8s.portForward({
+    namespace,
+    resource: "service/web",
+    remotePort: 80,
+  });
+  onCleanup(() => forward.close());
+
+  return {
+    get: (path: string) => fetch(new URL(path, forward.url)),
+    logs: async () => {
+      const [pod] = await k8s.list({ apiVersion: "v1", kind: "Pod", namespace });
+      return k8s.logs({ namespace, name: pod!.metadata!.name! });
+    },
+  };
+});
+```
+
+Now your tests read like what your product does:
+
+```ts
+import { expect } from "vitest";
+import { test } from "./fixtures";
+
+test("the home page loads", async ({ web }) => {
+  const response = await web.get("/");
+
+  expect(response.status).toBe(200);
+});
+
+test("a missing page returns 404, and it's in the logs", async ({ web }) => {
+  const response = await web.get("/nope");
+
+  expect(response.status).toBe(404);
+  expect(await web.logs()).toContain("/nope");
+});
+```
+
+Each test gets its own copy of the server in its own namespace. `web` is fully typed, and a test that doesn't ask for it doesn't pay for it.
+
 ## Quick start
 
 You need [Docker](https://docs.docker.com/get-docker/), [k3d](https://k3d.io), [kubectl](https://kubernetes.io/docs/tasks/tools/), Vitest 5 and Node `^22.18`, `^24.11` or `>=26`.
@@ -157,17 +208,7 @@ Each run also prints a command for watching the cluster live in `k9s`.
 | `fileK8s`             | A client shared by a whole file, for file-scoped fixtures                            |
 | `markClusterUnusable` | Stops later tests with a reason, when your own cleanup couldn't restore shared state |
 
-Add your own, as you would with any Vitest test:
-
-```ts
-import { test as base } from "vitekube";
-
-export const test = base.extend("api", async ({ k8s, scope }) => {
-  const forward = await k8s.portForward({ namespace: "default", resource: "service/api", remotePort: 80 });
-  scope.defer(() => forward.close());
-  return forward.url;
-});
-```
+Add your own with `.extend`, as [shown above](#make-it-yours). Use `{ scope: "file" }` to share one across a file, or `{ auto: true }` to run it for every test.
 
 ### The `k8s` client
 
