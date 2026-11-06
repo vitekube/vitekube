@@ -1,0 +1,6 @@
+# Command-line tools the cluster tests need. Node and pnpm come from Vite+ (`vp`), through
+# .node-version and packageManager. Docker is installed separately.
+[tools]
+k3d = "5.8.3"
+kubectl = "1.37.2"
+helm = "3.16.2"

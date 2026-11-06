@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.vitest/
+.vite-hooks/_/
+*.tsbuildinfo
+*.tgz
+.DS_Store

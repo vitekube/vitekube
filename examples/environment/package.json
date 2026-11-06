@@ -1,0 +1,16 @@
+{
+  "name": "@vitekube/example-environment",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "e2e": "vitest run",
+    "typecheck": "tsc --noEmit --incremental"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^7.0.2",
+    "vitekube": "workspace:*",
+    "vitest": "5.1.0"
+  }
+}

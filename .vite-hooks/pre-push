@@ -1,0 +1,1 @@
+vp pack && vp check && vp test

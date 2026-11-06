@@ -1,0 +1,18 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dependency
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: dependency }
+  template:
+    metadata:
+      labels: { app: dependency }
+    spec:
+      terminationGracePeriodSeconds: 0
+      containers:
+        - name: main
+          image: alpine:3.24
+          command: ["sleep", "3600"]

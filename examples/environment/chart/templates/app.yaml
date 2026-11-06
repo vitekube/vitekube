@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: example-app
+type: Opaque
+stringData:
+  value: {{ .Values.secretValue | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: example-app
+  labels:
+    chart-label: {{ .Values.label }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: example-app }
+  template:
+    metadata:
+      labels: { app: example-app }
+    spec:
+      terminationGracePeriodSeconds: 0
+      containers:
+        - name: main
+          image: example-app:local
+          imagePullPolicy: IfNotPresent

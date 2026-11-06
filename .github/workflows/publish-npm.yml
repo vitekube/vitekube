@@ -1,0 +1,92 @@
+name: Publish npm package
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Version bump type
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: publish-npm
+  cancel-in-progress: false
+
+env:
+  VP_GIT_HOOKS: "0"
+
+jobs:
+  publish:
+    name: Bump version and publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Refresh main
+        run: |
+          git fetch origin main --tags
+          git checkout -B main origin/main
+          git pull --ff-only origin main
+
+      - name: Set up Vite+, Node.js and dependencies
+        uses: voidzero-dev/setup-vp@v1.22.0
+        with:
+          cache: true
+
+      - name: Set up cluster tools
+        uses: jdx/mise-action@v3
+
+      # The examples type-check against dist, so the build comes first.
+      - name: Build package
+        run: vp pack
+
+      - name: Run checks
+        run: |
+          vp check
+          vp test
+
+      - name: Run contract tests and examples
+        run: |
+          pnpm run e2e:all
+          pnpm run e2e:tarball
+
+      - name: Configure git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump package version
+        run: npm version "${{ inputs.release }}" --no-git-tag-version
+
+      - name: Read package version
+        id: package
+        run: |
+          version=$(node -p "require('./package.json').version")
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Commit version bump
+        run: |
+          git add package.json
+          git commit -m "chore: release vitekube v${{ steps.package.outputs.version }}"
+          git tag "v${{ steps.package.outputs.version }}"
+
+      # Pushed first: a failed publish then only skips a version number, while a failed push after
+      # publishing would leave a release with no commit or tag, and the next run would collide with it.
+      - name: Push version bump and tag
+        run: git push origin main --follow-tags
+
+      - name: Publish to npm
+        run: npm publish --access public --provenance
