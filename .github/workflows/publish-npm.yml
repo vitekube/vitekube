@@ -12,6 +12,11 @@ on:
           - minor
           - major
           - prerelease
+      skip_e2e:
+        description: Skip the cluster tests. Checks and unit tests still run.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -48,6 +53,7 @@ jobs:
           cache: true
 
       - name: Set up cluster tools
+        if: ${{ !inputs.skip_e2e }}
         uses: jdx/mise-action@v3
 
       # The examples type-check against dist, so the build comes first.
@@ -60,6 +66,7 @@ jobs:
           vp test
 
       - name: Run contract tests and examples
+        if: ${{ !inputs.skip_e2e }}
         run: |
           pnpm run e2e:all
           pnpm run e2e:tarball
