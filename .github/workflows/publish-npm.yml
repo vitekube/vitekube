@@ -11,6 +11,7 @@ on:
           - patch
           - minor
           - major
+          - prerelease
 
 permissions:
   contents: write
@@ -69,7 +70,14 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Bump package version
-        run: npm version "${{ inputs.release }}" --no-git-tag-version
+        env:
+          RELEASE: ${{ inputs.release }}
+        run: |
+          if [ "$RELEASE" = "prerelease" ]; then
+            npm version prerelease --preid rc --no-git-tag-version
+          else
+            npm version "$RELEASE" --no-git-tag-version
+          fi
 
       - name: Read package version
         id: package
@@ -89,4 +97,12 @@ jobs:
         run: git push origin main --follow-tags
 
       - name: Publish to npm
-        run: npm publish --access public --provenance
+        env:
+          RELEASE: ${{ inputs.release }}
+        run: |
+          # A prerelease goes under `next`, so `npm install vitekube` doesn't pick it up.
+          if [ "$RELEASE" = "prerelease" ]; then
+            npm publish --access public --provenance --tag next
+          else
+            npm publish --access public --provenance
+          fi
