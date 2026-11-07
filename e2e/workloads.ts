@@ -59,3 +59,33 @@ export const pod = (name: string, image: string, command: string[], env: { name:
     containers: [{ name: "main", image, command, env }],
   },
 });
+
+/** A web server that answers with its version. It is slow to start, so only its readiness probe keeps traffic away. */
+export const versionedWebDeployment = (name: string, version: string) => ({
+  apiVersion: "apps/v1",
+  kind: "Deployment",
+  metadata: { name },
+  spec: {
+    replicas: 2,
+    selector: { matchLabels: { app: name } },
+    template: {
+      metadata: { labels: { app: name } },
+      spec: {
+        terminationGracePeriodSeconds: 0,
+        containers: [
+          {
+            name: "web",
+            image: WEB_IMAGE,
+            command: [
+              "sh",
+              "-c",
+              `sleep 3 && mkdir -p /www && echo ${version} > /www/index.html && exec httpd -f -p 8080 -h /www`,
+            ],
+            ports: [{ containerPort: 8080 }],
+            readinessProbe: { httpGet: { path: "/", port: 8080 }, periodSeconds: 1 },
+          },
+        ],
+      },
+    },
+  },
+});
