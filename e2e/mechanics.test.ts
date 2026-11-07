@@ -12,20 +12,14 @@ import {
   type KubernetesClient,
 } from "../src/core/index.ts";
 import { test } from "../src/index.ts";
-import { targetWithClosedEndpoint } from "./helpers.ts";
-import { pod, webDeployment, webService, WEB_IMAGE } from "./workloads.ts";
+import { startWeb, targetWithClosedEndpoint } from "./helpers.ts";
+import { pod, WEB_IMAGE } from "./workloads.ts";
 
 const execFileAsync = promisify(execFile);
 
 const isPortForwardRunning = async (port: number): Promise<boolean> => {
   const { stdout } = await execFileAsync("ps", ["-A", "-o", "command="]);
   return stdout.split("\n").some((line) => line.includes("port-forward") && line.includes(`${port}:`));
-};
-
-const startWeb = async (k8s: KubernetesClient, namespace: string, name = "web") => {
-  await k8s.apply(namespace, webDeployment(name));
-  await k8s.apply(namespace, webService(name));
-  await k8s.waitForRollout({ namespace, name }, { timeoutMs: 120_000 });
 };
 
 const replicasOf = async (k8s: KubernetesClient, namespace: string, name: string) => {

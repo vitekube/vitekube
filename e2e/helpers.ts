@@ -4,6 +4,14 @@ import { join } from "node:path";
 import { KubeConfig } from "@kubernetes/client-node";
 
 import { runChecked, type KubernetesClient, type KubernetesTarget, type Scope } from "../src/core/index.ts";
+import { webDeployment, webService } from "./workloads.ts";
+
+/** Starts the web server behind a Service of the same name, and waits for it to roll out. */
+export const startWeb = async (k8s: KubernetesClient, namespace: string, name = "web"): Promise<void> => {
+  await k8s.apply(namespace, webDeployment(name));
+  await k8s.apply(namespace, webService(name));
+  await k8s.waitForRollout({ namespace, name }, { timeoutMs: 120_000 });
+};
 
 const writeTarget = async (config: KubeConfig, scope: Scope): Promise<KubernetesTarget> => {
   const directory = await mkdtemp(join(tmpdir(), "vitekube-e2e-"));
