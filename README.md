@@ -215,7 +215,7 @@ Add your own with `.extend`, as [shown above](#make-it-yours). Use `{ scope: "fi
 | Group                  | Methods                                                                     |
 | ---------------------- | --------------------------------------------------------------------------- |
 | **Read and write**     | `get`, `list`, `create`, `replace`, `patch`, `delete`, `apply`, `applyFile` |
-| **Wait for a result**  | `waitForJobCompletion`, `waitForPodReady`, `waitForRollout`                 |
+| **Wait for a result**  | `waitForJobCompletion`, `waitForPodReady`, `waitForRollout`, `waitForNone`  |
 | **Interact**           | `exec`, `logs`, `portForward`                                               |
 | **Simulate an outage** | `scaleTemporarily`                                                          |
 | **Helm**               | `helm.status`                                                               |
@@ -226,6 +226,17 @@ Two details that are easy to get wrong by hand are built in:
 
 - **`get` tells absence from failure.** It returns `null` only when the API server confirms the resource doesn't exist. A permission or connection error throws, so a broken cluster can't pass a "was it deleted?" check.
 - **Waits stop when the answer is known.** A failed Job throws straight away, without waiting out the timeout.
+
+Use `waitForNone` when a controller or deletion needs time to remove resources:
+
+```ts
+await k8s.waitForNone(
+  { apiVersion: "batch/v1", kind: "Job", namespace },
+  { labelSelector: "app=my-worker", timeoutMs: 60_000 }
+);
+```
+
+It waits for the API server to return an empty list. Terminating resources still count; permission and connection errors throw instead of passing. Without a selector, it waits for every resource of that kind in the requested namespace, or across namespaces when no namespace is supplied. Timeout errors list remaining resource names and whether they are terminating, never their specs.
 
 ### Matchers
 
@@ -359,6 +370,31 @@ TypeError: fetch failed
 
 Want a closer look? `VITEKUBE_KEEP_ON_FAILURE=1 npx vitest run` keeps the failed test's namespace and prints the command to inspect it. The next run removes it.
 
+### Evidence from shared namespaces
+
+Tests that use shared services or application-managed namespaces can ask for the same evidence without creating a test namespace:
+
+```ts
+test("queued work resumes after an outage", async ({ evidence }) => {
+  evidence.watchResources({
+    namespace: "default",
+    labelSelector: "app=worker",
+    tailLines: 80,
+  });
+
+  // Exercise the application. If this test fails, its worker evidence prints automatically.
+});
+```
+
+`watchResources` registers collectors; it does not read the cluster until evidence is captured. It uses a client that remains usable after the test's signal is canceled. Register as many namespaces or selectors as needed.
+
+- With a selector, it collects matching Pod summaries, their Pod events (matched by UID), and logs. Without a selector, it includes every Pod and event in the namespace, including controller events.
+- Logs include init, application and ephemeral containers, with 100 lines per container by default. Containers with observed restarts also get previous-container logs; set `previous: false` to disable those reads.
+- Logs respect `markSensitive` and are not read at all after `restrict()`. Resource summaries exclude specs, and collection failures are reported without hiding the test's failure.
+- This is a failure-time snapshot, not a log archive. Deleted Pods and older container incarnations may already be gone. Save logs before deliberate deletion if the test needs them.
+
+The `namespace` fixture uses this same collector automatically. Explicit watchers do not own or delete the namespaces they inspect, and do not change `VITEKUBE_KEEP_ON_FAILURE` behavior.
+
 ### Keeping secrets out of the output
 
 ```ts
@@ -387,7 +423,19 @@ test("the app survives losing its worker", async ({ k8s }) => {
 
 Call `worker.restore()` to bring it back sooner. It waits for the rollout, and it's safe to call twice.
 
-Scaling down returns before the pods have gone, and a pod that is still terminating can pick up work. If your test needs the workload truly gone, wait for its pods to exit first.
+By default, scaling down returns before the pods have gone, and a pod that is still terminating can pick up work. When a test needs the worker truly stopped, opt in to waiting:
+
+```ts
+await using worker = await k8s.scaleTemporarily({ namespace: "default", name: "worker" }, 0, {
+  waitFor: "pods-gone",
+  timeoutMs: 120_000,
+});
+
+// All Pods matching the Deployment's selector are gone, including terminating Pods.
+// Arrange queued work here, then call worker.restore() when ready.
+```
+
+`waitFor: "pods-gone"` requires zero replicas and uses the Deployment's full selector, including selector expressions. Its wait defaults to 120 seconds; `restoreTimeoutMs` separately bounds restoration. If scaling or waiting fails, vitekube attempts to restore the original replicas before throwing the original error, even after cancellation. Restoration failure also marks the cluster unusable. This stops matching Pods, not work they already handed to external systems; an autoscaler or another actor changing replicas can also invalidate the stopped state.
 
 If putting shared state back fails, the cluster is flagged as unusable. Later tests stop and tell you why, rather than failing in confusing ways.
 

@@ -64,4 +64,19 @@ describe("waitFor", () => {
       })
     ).rejects.toThrow();
   });
+
+  test("an already canceled wait never reads, even if the result would pass", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    let reads = 0;
+
+    await expect(
+      waitFor(
+        async () => ++reads,
+        () => true,
+        { ...options, signal: controller.signal }
+      )
+    ).rejects.toThrow();
+    expect(reads).toBe(0);
+  });
 });

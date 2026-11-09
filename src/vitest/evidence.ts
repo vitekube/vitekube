@@ -1,3 +1,5 @@
+import { addResourceEvidence, type ResourceEvidenceClient, type ResourceEvidenceOptions } from "./resource-evidence.ts";
+
 export type EvidenceSectionOptions = {
   /** Output that can contain application data, such as logs. Dropped when the test is restricted. */
   mayContainSensitiveData?: boolean;
@@ -13,6 +15,8 @@ export type Evidence = {
   restrict: () => void;
   /** Registers something to collect if the test fails. Register as soon as the thing to inspect is known. */
   add: (title: string, collect: () => Promise<string>, options?: EvidenceSectionOptions) => void;
+  /** Collects events, Pod summaries and container logs on failure, including in shared namespaces. */
+  watchResources: (options: ResourceEvidenceOptions) => void;
   /** Runs every collector. A failing collector reports its failure and never hides the test's own. */
   capture: () => Promise<string>;
 };
@@ -50,12 +54,12 @@ const withinLimit = async (collect: () => Promise<string>): Promise<string> => {
 const bounded = (text: string): string =>
   text.length > MAX_SECTION_CHARS ? `[earlier output removed]\n${text.slice(-MAX_SECTION_CHARS)}` : text;
 
-export const createEvidence = (): Evidence => {
+export const createEvidence = (client: ResourceEvidenceClient): Evidence => {
   const sensitive: string[] = [];
   const sections: { title: string; collect: () => Promise<string>; mayContainSensitiveData: boolean }[] = [];
   let restricted = false;
 
-  return {
+  const evidence: Evidence = {
     markSensitive: (value) => {
       sensitive.push(value);
     },
@@ -65,6 +69,7 @@ export const createEvidence = (): Evidence => {
     add: (title, collect, options = {}) => {
       sections.push({ title, collect, mayContainSensitiveData: options.mayContainSensitiveData ?? false });
     },
+    watchResources: (options) => addResourceEvidence(evidence, client, options),
     capture: async () => {
       const included = sections.filter((section) => !(restricted && section.mayContainSensitiveData));
       // Together, because the hook running this has its own timeout.
@@ -79,4 +84,5 @@ export const createEvidence = (): Evidence => {
         .join("\n");
     },
   };
+  return evidence;
 };

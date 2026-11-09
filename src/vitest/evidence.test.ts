@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createEvidence, sanitize } from "./evidence.ts";
+
+const client = { list: vi.fn(), logs: vi.fn() };
 
 describe("sanitize", () => {
   it("removes raw, base64 and JSON-escaped forms", () => {
@@ -23,7 +25,7 @@ describe("sanitize", () => {
 
 describe("createEvidence", () => {
   it("reports a failing collector and still includes the others", async () => {
-    const evidence = createEvidence();
+    const evidence = createEvidence(client);
     evidence.add("broken", () => Promise.reject(new Error("no access")));
     evidence.add("working", () => Promise.resolve("pod state"));
 
@@ -34,7 +36,7 @@ describe("createEvidence", () => {
   });
 
   it("removes sensitive values from collector errors too", async () => {
-    const evidence = createEvidence();
+    const evidence = createEvidence(client);
     evidence.add("broken", () => Promise.reject(new Error("failed with secret-value")));
     evidence.markSensitive("secret-value");
 
@@ -42,7 +44,7 @@ describe("createEvidence", () => {
   });
 
   it("drops sections that may contain sensitive data when restricted", async () => {
-    const evidence = createEvidence();
+    const evidence = createEvidence(client);
     evidence.add("logs", () => Promise.resolve("application output"), { mayContainSensitiveData: true });
     evidence.add("state", () => Promise.resolve("Running"));
     evidence.restrict();
@@ -54,7 +56,7 @@ describe("createEvidence", () => {
   });
 
   it("keeps the end of a long section", async () => {
-    const evidence = createEvidence();
+    const evidence = createEvidence(client);
     evidence.add("logs", () => Promise.resolve(`${"x".repeat(30_000)}the failure`));
 
     const captured = await evidence.capture();

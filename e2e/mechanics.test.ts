@@ -116,6 +116,22 @@ describe("logs and exec", () => {
 });
 
 describe("temporary scaling", () => {
+  test("pods-gone returns only after the worker's Pods disappear, then restores it", async ({ k8s, namespace }) => {
+    await startWeb(k8s, namespace);
+    const pods = { apiVersion: "v1", kind: "Pod", namespace };
+    {
+      await using paused = await k8s.scaleTemporarily({ namespace, name: "web" }, 0, {
+        waitFor: "pods-gone",
+        timeoutMs: 60_000,
+      });
+
+      expect(await k8s.list(pods, { labelSelector: "app=web" })).toEqual([]);
+      expect(paused.originalReplicas).toBe(1);
+    }
+    expect(await replicasOf(k8s, namespace, "web")).toBe(1);
+    expect(await k8s.list(pods, { labelSelector: "app=web" })).toHaveLength(1);
+  });
+
   test("replicas are restored after a deliberate exception", async ({ k8s, namespace }) => {
     await startWeb(k8s, namespace);
 

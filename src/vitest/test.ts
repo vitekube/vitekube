@@ -1,9 +1,7 @@
-import type { CoreV1Event, V1Pod } from "@kubernetes/client-node";
 import { expect, inject, test as base } from "vitest";
 
 import { createClusterStateStore } from "../cluster/state.ts";
-import { createKubernetesClient, type KubernetesClient, type KubernetesTarget } from "../core/kubernetes.ts";
-import { summarizePod } from "../core/resources.ts";
+import { createKubernetesClient, type KubernetesTarget } from "../core/kubernetes.ts";
 import { createScope } from "../core/scope.ts";
 import { createEvidence } from "./evidence.ts";
 import { toBePodReady, toHaveCondition, toHaveContainerState } from "./matchers.ts";
@@ -25,45 +23,6 @@ const clusterTarget = (): KubernetesTarget => {
 };
 
 const stateStore = () => createClusterStateStore(createKubernetesClient(clusterTarget()));
-
-const LOG_TAIL_LINES = 100;
-
-/** Events and pod state hold no values from Secrets or environment variables. Logs can, so they are marked. */
-const addNamespaceEvidence = (
-  evidence: ReturnType<typeof createEvidence>,
-  client: KubernetesClient,
-  namespace: string
-) => {
-  evidence.add(`events in ${namespace}`, async () => {
-    const events = await client.list<CoreV1Event>({ apiVersion: "v1", kind: "Event", namespace });
-    return events
-      .map(
-        (event) =>
-          `${event.type} ${event.reason} ${event.involvedObject.kind}/${event.involvedObject.name}: ${event.message}`
-      )
-      .join("\n");
-  });
-  const pods = () => client.list<V1Pod>({ apiVersion: "v1", kind: "Pod", namespace });
-  evidence.add(`pods in ${namespace}`, async () =>
-    (await pods()).map((pod) => `${pod.metadata?.name} ${JSON.stringify(summarizePod(pod))}`).join("\n")
-  );
-  evidence.add(
-    `logs in ${namespace}`,
-    async () => {
-      const sections = await Promise.all(
-        (await pods()).map(async (pod) => {
-          const name = pod.metadata?.name ?? "";
-          const logs = await client
-            .logs({ namespace, name }, { tailLines: LOG_TAIL_LINES })
-            .catch((error: unknown) => `could not read: ${String(error)}`);
-          return `${name}:\n${logs}`;
-        })
-      );
-      return sections.join("\n");
-    },
-    { mayContainSensitiveData: true }
-  );
-};
 
 export const test = base
   // Stops a run whose shared state could not be restored, instead of letting later tests fail misleadingly.
@@ -95,20 +54,19 @@ export const test = base
     return scope;
   })
   // Collected in an afterEach hook, which Vitest runs before any fixture is torn down.
-  // oxlint-disable-next-line no-empty-pattern -- Vitest requires object destructuring here.
-  .extend("evidence", ({}) => createEvidence())
+  .extend("evidence", ({ fileK8s }) => createEvidence(fileK8s))
   // For a fixture that changed shared cluster state and could not put it back. Later tests then stop with this reason.
   .extend("markClusterUnusable", () => (reason: string) => stateStore().markUnusable(reason))
-  .extend("namespace", async ({ task, evidence }, { onCleanup }) => {
-    // A separate client: the test's own is canceled on timeout, and this cleanup must still run.
-    const client = createKubernetesClient(clusterTarget());
+  .extend("namespace", async ({ task, evidence, fileK8s }, { onCleanup }) => {
+    // The file client is not canceled on test timeout, so evidence and cleanup still work.
+    const client = fileK8s;
     const name = ephemeralNamespaceName(task.name);
     await client.create({
       apiVersion: "v1",
       kind: "Namespace",
       metadata: { name, labels: { [EPHEMERAL_NAMESPACE_LABEL]: "true" } },
     });
-    addNamespaceEvidence(evidence, client, name);
+    evidence.watchResources({ namespace: name });
     onCleanup(async () => {
       if (task.result?.state === "fail" && process.env.VITEKUBE_KEEP_ON_FAILURE === "1") {
         const { kubeconfigPath, context } = client.target;
