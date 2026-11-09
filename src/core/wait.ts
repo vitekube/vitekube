@@ -40,6 +40,7 @@ export const waitFor = async <T>(
   const intervalMs = options.intervalMs ?? 1_000;
 
   while (true) {
+    options.signal?.throwIfAborted();
     const value = await read();
     if (predicate(value)) {
       return value;

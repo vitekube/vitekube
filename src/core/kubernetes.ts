@@ -6,6 +6,7 @@ import {
   type KubernetesObject,
   type V1Deployment,
   type V1Job,
+  type V1LabelSelector,
   type V1Pod,
 } from "@kubernetes/client-node";
 
@@ -81,6 +82,9 @@ const REQUEST_TIMEOUT_MS = 30_000;
 
 /** The client has no per-request timeout of its own, so a hung API server would otherwise hang the test. */
 const request = async <T>(what: string, call: () => Promise<T>, signal: AbortSignal | undefined): Promise<T> => {
+  if (signal?.aborted) {
+    throw new Error(`${what} canceled`);
+  }
   const { promise: stopped, reject } = Promise.withResolvers<never>();
   const timer = setTimeout(
     () => reject(new Error(`${what} timed out after ${REQUEST_TIMEOUT_MS}ms`)),
@@ -111,11 +115,44 @@ const toObject = ({ apiVersion, kind, name, namespace }: ResourceRef): Kubernete
 const describeRef = ({ kind, name, namespace }: ResourceRef): string =>
   `${kind} ${namespace ? `${namespace}/` : ""}${name}`;
 
+/** An empty selector would wait for unrelated Pods throughout the namespace. Never infer one. */
+const deploymentSelector = (selector: V1LabelSelector | undefined): string => {
+  const parts = Object.entries(selector?.matchLabels ?? {}).map(([key, value]) => `${key}=${value}`);
+  for (const { key, operator, values = [] } of selector?.matchExpressions ?? []) {
+    switch (operator) {
+      case "In":
+      case "NotIn":
+        parts.push(`${key} ${operator === "In" ? "in" : "notin"} (${values.join(",")})`);
+        break;
+      case "Exists":
+        parts.push(key);
+        break;
+      case "DoesNotExist":
+        parts.push(`!${key}`);
+        break;
+      default:
+        throw new Error(`Unsupported Deployment selector operator: ${operator}`);
+    }
+  }
+  if (parts.length === 0) {
+    throw new Error("Cannot wait for Deployment Pods without a nonempty selector");
+  }
+  return parts.join(",");
+};
+
 export type TemporaryScale = {
   originalReplicas: number;
   /** Puts the original replica count back and waits for the rollout. Safe to call twice. */
   restore: () => Promise<void>;
   [Symbol.asyncDispose]: () => Promise<void>;
+};
+
+export type TemporaryScaleOptions = {
+  restoreTimeoutMs?: number;
+  /** For zero replicas only: wait until every Pod matching the Deployment's selector is gone. */
+  waitFor?: "pods-gone";
+  /** Bounds the pods-gone wait. Defaults to 120 seconds. */
+  timeoutMs?: number;
 };
 
 export type ClientOptions = {
@@ -145,6 +182,11 @@ export type KubernetesClient = {
   apply: (namespace: string, manifest: object, options?: { private?: boolean }) => Promise<void>;
   /** Applies a YAML or JSON file, which may hold several documents. Tests resolve relative paths from Vitest's root. */
   applyFile: (namespace: string, path: string, options?: { private?: boolean }) => Promise<void>;
+  /** Waits for a successful empty list, including the disappearance of terminating resources. */
+  waitForNone: (
+    resource: Omit<ResourceRef, "name">,
+    options: WaitOptions & { labelSelector?: string }
+  ) => Promise<void>;
   waitForJobCompletion: (ref: NamedRef, options: WaitOptions) => Promise<V1Job>;
   waitForPodReady: (ref: NamedRef, options: WaitOptions) => Promise<V1Pod>;
   waitForRollout: (ref: NamedRef, options: WaitOptions) => Promise<V1Deployment>;
@@ -155,11 +197,7 @@ export type KubernetesClient = {
     options?: { container?: string; input?: string | Uint8Array; private?: boolean; timeoutMs?: number }
   ) => Promise<RunResult>;
   portForward: (options: PortForwardOptions) => Promise<PortForward>;
-  scaleTemporarily: (
-    ref: NamedRef,
-    replicas: number,
-    options?: { restoreTimeoutMs?: number }
-  ) => Promise<TemporaryScale>;
+  scaleTemporarily: (ref: NamedRef, replicas: number, options?: TemporaryScaleOptions) => Promise<TemporaryScale>;
 };
 
 const KUBECTL_TIMEOUT_MS = 30_000;
@@ -212,11 +250,13 @@ export const createKubernetesClient = (target: KubernetesTarget, options: Client
   };
 
   const patch: KubernetesClient["patch"] = async (ref, changes) => {
+    const resource = toObject(ref);
+    const metadata = (changes as { metadata?: Record<string, unknown> }).metadata;
     await request(
       `Patching ${describeRef(ref)}`,
       () =>
         api.patch(
-          { ...toObject(ref), ...changes },
+          { ...changes, ...resource, metadata: { ...metadata, name: ref.name, namespace: ref.namespace } },
           undefined,
           undefined,
           undefined,
@@ -234,34 +274,47 @@ export const createKubernetesClient = (target: KubernetesTarget, options: Client
       { signal, ...waitOptions, describe: `rollout of ${namespace}/${name}`, summarize: summarizeDeployment }
     );
 
+  const list: KubernetesClient["list"] = async <T extends KubernetesObject>(
+    { apiVersion, kind, namespace }: Omit<ResourceRef, "name">,
+    listOptions: { labelSelector?: string } = {}
+  ) => {
+    const result = await request(
+      `Listing ${kind}`,
+      () =>
+        api.list<T>(apiVersion, kind, namespace, undefined, undefined, undefined, undefined, listOptions.labelSelector),
+      signal
+    );
+    return result.items;
+  };
+
+  const waitForNone: KubernetesClient["waitForNone"] = async (resource, waitOptions) => {
+    await waitFor(
+      () => list(resource, { labelSelector: waitOptions.labelSelector }),
+      (items) => items.length === 0,
+      {
+        signal,
+        ...waitOptions,
+        describe: `no ${resource.kind} resources${resource.namespace ? ` in ${resource.namespace}` : ""}${
+          waitOptions.labelSelector ? ` matching ${waitOptions.labelSelector}` : ""
+        }`,
+        summarize: (items) =>
+          items.map(({ metadata }) => ({
+            name: metadata?.name,
+            namespace: metadata?.namespace,
+            terminating: Boolean(metadata?.deletionTimestamp),
+          })),
+      }
+    );
+  };
+
   return {
     target,
     helm: createHelmObserver(target, { signal }),
     get,
     patch,
     waitForRollout,
-
-    list: async <T extends KubernetesObject>(
-      { apiVersion, kind, namespace }: { apiVersion: string; kind: string; namespace?: string },
-      listOptions: { labelSelector?: string } = {}
-    ) => {
-      const result = await request(
-        `Listing ${kind}`,
-        () =>
-          api.list<T>(
-            apiVersion,
-            kind,
-            namespace,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            listOptions.labelSelector
-          ),
-        signal
-      );
-      return result.items;
-    },
+    list,
+    waitForNone,
 
     create: (resource) =>
       request(`Creating ${resource.kind} ${resource.metadata?.name}`, () => api.create(resource), signal),
@@ -345,9 +398,14 @@ export const createKubernetesClient = (target: KubernetesTarget, options: Client
     portForward: (forwardOptions) => startPortForward(target, forwardOptions),
 
     scaleTemporarily: async ({ namespace, name }, replicas, scaleOptions = {}) => {
+      if (scaleOptions.waitFor === "pods-gone" && replicas !== 0) {
+        throw new Error('waitFor: "pods-gone" requires zero replicas');
+      }
       const ref: ResourceRef = { apiVersion: "apps/v1", kind: "Deployment", namespace, name };
       const deployment = await getRequired<V1Deployment>(ref);
       const originalReplicas = deployment.spec?.replicas ?? 1;
+      const labelSelector =
+        scaleOptions.waitFor === "pods-gone" ? deploymentSelector(deployment.spec?.selector) : undefined;
 
       let restoring: Promise<void> | undefined;
       const restore = (): Promise<void> => {
@@ -373,6 +431,12 @@ export const createKubernetesClient = (target: KubernetesTarget, options: Client
 
       try {
         await patch(ref, { spec: { replicas } });
+        if (scaleOptions.waitFor === "pods-gone") {
+          await waitForNone(
+            { apiVersion: "v1", kind: "Pod", namespace },
+            { labelSelector, timeoutMs: scaleOptions.timeoutMs ?? DEFAULT_RESTORE_TIMEOUT_MS }
+          );
+        }
       } catch (error) {
         await restore().catch(() => {});
         throw error;

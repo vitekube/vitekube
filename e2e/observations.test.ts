@@ -37,6 +37,7 @@ describe("reading resources", () => {
     await expect(limited.waitForJobCompletion({ namespace, name: "absent" }, { timeoutMs: 60_000 })).rejects.toThrow(
       "Forbidden"
     );
+    await expect(limited.waitForNone({ ...POD, namespace }, { timeoutMs: 60_000 })).rejects.toThrow("Forbidden");
     expect(Date.now() - startedAt).toBeLessThan(5_000);
   });
 
@@ -67,6 +68,50 @@ describe("reading resources", () => {
       { timeoutMs: 60_000, describe: "pod removal" }
     );
     expect(absent).toBeNull();
+  });
+
+  test("waitForNone selects resources without waiting for unrelated ones", async ({ k8s, namespace }) => {
+    const resource = { apiVersion: "v1", kind: "ConfigMap", namespace };
+    for (const name of ["selected", "unrelated"]) {
+      await k8s.create({
+        ...resource,
+        metadata: { name, namespace, labels: { group: name } },
+      });
+    }
+    await k8s.delete({ ...resource, name: "selected" });
+
+    await k8s.waitForNone(resource, { labelSelector: "group=selected", timeoutMs: 30_000 });
+
+    expect(await k8s.get({ ...resource, name: "unrelated" })).not.toBeNull();
+  });
+
+  test("waitForNone includes terminating resources until deletion finishes", async ({
+    k8s,
+    fileK8s,
+    namespace,
+    scope,
+  }) => {
+    const resource = { apiVersion: "v1", kind: "ConfigMap", namespace };
+    const ref = { ...resource, name: "held" };
+    await k8s.create({
+      ...resource,
+      metadata: { name: "held", namespace, labels: { group: "held" }, finalizers: ["vitekube.dev/test-hold"] },
+    });
+    scope.defer(async () => {
+      if (await fileK8s.get(ref)) {
+        await fileK8s.patch(ref, { metadata: { finalizers: [] } });
+      }
+    });
+    await k8s.delete(ref);
+
+    const error = await k8s
+      .waitForNone(resource, { labelSelector: "group=held", timeoutMs: 0 })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(WaitTimeoutError);
+    expect(error).toMatchObject({ lastState: [{ name: "held", namespace, terminating: true }] });
+    await k8s.patch(ref, { metadata: { finalizers: [] } });
+    await k8s.waitForNone(resource, { labelSelector: "group=held", timeoutMs: 30_000 });
   });
 });
 
