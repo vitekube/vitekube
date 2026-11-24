@@ -40,6 +40,24 @@ export const parseLifecycleLabels = (output: string): ManagedLifecycle | undefin
 };
 
 /**
+ * Rootless Docker runs k3s inside a user namespace, where the kubelet cannot open `/dev/kmsg` and exits unless
+ * it is told where it is running. `securityOptions` is the JSON that `docker info` prints for `.SecurityOptions`.
+ */
+export const userNamespaceK3sArgs = (securityOptions: string, k3sArgs: readonly string[]): string[] => {
+  let options: unknown;
+  try {
+    options = JSON.parse(securityOptions);
+  } catch {
+    return [];
+  }
+  const rootless = Array.isArray(options) && options.some((option) => option === "name=rootless");
+  if (!rootless || k3sArgs.some((arg) => arg.includes("KubeletInUserNamespace"))) {
+    return [];
+  }
+  return ["--kubelet-arg=feature-gates=KubeletInUserNamespace=true@server:*;agent:*"];
+};
+
+/**
  * `privateKubeconfigPath` becomes k3d's default kubeconfig, because `k3d cluster delete` edits the default one
  * and has no flag to prevent that. The user's own kubeconfig is never read or changed.
  *
@@ -70,6 +88,9 @@ export const createK3dProvider = (privateKubeconfigPath: string): ClusterProvide
     },
 
     create: async (name, { agents, lifecycle, k3sArgs = [] }) => {
+      // Detection is best effort: when `docker info` fails, k3d reports the real problem itself.
+      const info = await run("docker", ["info", "--format", "{{json .SecurityOptions}}"], commandOptions);
+      const extraArgs = info.status === 0 ? userNamespaceK3sArgs(info.stdout, k3sArgs) : [];
       await runChecked(
         "k3d",
         [
@@ -83,7 +104,7 @@ export const createK3dProvider = (privateKubeconfigPath: string): ClusterProvide
           "--kubeconfig-switch-context=false",
           "--runtime-label",
           `${LIFECYCLE_LABEL}=${lifecycle}@server:*`,
-          ...k3sArgs.flatMap((arg) => ["--k3s-arg", arg]),
+          ...[...extraArgs, ...k3sArgs].flatMap((arg) => ["--k3s-arg", arg]),
         ],
         { env, timeoutMs: CREATE_TIMEOUT_MS }
       );
