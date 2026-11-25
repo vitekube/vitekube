@@ -56,6 +56,43 @@ describe("run", () => {
   });
 });
 
+describe("onLine", () => {
+  const collect = async (script: string, options: { private?: boolean } = {}) => {
+    const lines: string[] = [];
+    const result = await run(process.execPath, ["-e", script], {
+      timeoutMs: 10_000,
+      ...options,
+      onLine: (line, stream) => lines.push(`${stream}:${line}`),
+    });
+    return { lines, result };
+  };
+
+  test("passes each line on as it arrives, joining lines split across chunks", async () => {
+    const { lines, result } = await collect(
+      `process.stdout.write("fir"); setTimeout(() => { process.stdout.write("st\\r\\nsecond\\n"); process.stderr.write("err\\nlast"); }, 50)`
+    );
+
+    expect(lines).toEqual(["stdout:first", "stdout:second", "stderr:err", "stderr:last"]);
+    expect(result.stdout).toBe("first\r\nsecond\n");
+    expect(result.stderr).toBe("err\nlast");
+  });
+
+  test("keeps multi-byte characters split across chunks whole", async () => {
+    const { lines } = await collect(
+      `const b = Buffer.from("é\\n"); process.stdout.write(b.subarray(0, 1)); setTimeout(() => process.stdout.write(b.subarray(1)), 50)`
+    );
+
+    expect(lines).toEqual(["stdout:é"]);
+  });
+
+  test("is never called for a private command", async () => {
+    const { lines, result } = await collect(`console.log("secret")`, { private: true });
+
+    expect(lines).toEqual([]);
+    expect(result.stdout).toBe("secret\n");
+  });
+});
+
 describe("exact bytes and cancellation", () => {
   test("keeps bytes that are not valid UTF-8", async () => {
     const result = await node(`process.stdout.write(Buffer.from([0xff, 0x00, 0x0a, 0x20]))`);

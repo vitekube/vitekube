@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 
 import { run, runChecked, type RunOptions } from "../core/process.ts";
+import { k3dProgressLine, relayLines } from "../core/progress.ts";
 
 export type ManagedLifecycle = "fresh" | "reuse";
 
@@ -106,7 +107,7 @@ export const createK3dProvider = (privateKubeconfigPath: string): ClusterProvide
           `${LIFECYCLE_LABEL}=${lifecycle}@server:*`,
           ...[...extraArgs, ...k3sArgs].flatMap((arg) => ["--k3s-arg", arg]),
         ],
-        { env, timeoutMs: CREATE_TIMEOUT_MS }
+        { env, timeoutMs: CREATE_TIMEOUT_MS, onLine: relayLines("k3d", k3dProgressLine) }
       );
     },
 
@@ -123,6 +124,7 @@ export const createK3dProvider = (privateKubeconfigPath: string): ClusterProvide
       await runChecked("k3d", ["image", "import", "--mode", "direct", "--cluster", name, ...references], {
         env,
         timeoutMs: IMPORT_TIMEOUT_MS,
+        onLine: relayLines("k3d", k3dProgressLine),
       });
     },
 

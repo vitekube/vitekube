@@ -13,6 +13,7 @@ import { createClusterStateStore, type ClusterState, type ClusterStateStore } fr
 import { formatDuration } from "../core/duration.ts";
 import { createKubernetesClient, type KubernetesClient, type KubernetesTarget } from "../core/kubernetes.ts";
 import { killOwnedChildren } from "../core/process.ts";
+import { log, withProgress } from "../core/progress.ts";
 import { createScope, type Scope } from "../core/scope.ts";
 import { prepareEnvironment, type EnvironmentSpec } from "./environment.ts";
 import { EPHEMERAL_NAMESPACE_LABEL } from "./namespace.ts";
@@ -64,8 +65,6 @@ const LOCK_TTL_MS = 60_000;
 const HEARTBEAT_MS = 15_000;
 const LOCK_POLL_MS = 2_000;
 const MARKER = "vitekube";
-
-const log = (message: string): void => console.log(`[vitekube] ${message}`);
 
 /** `vitest list` runs global setup even though it only collects tests, and collecting needs no cluster. */
 const isListCommand = (): boolean => process.argv.slice(2)[0] === "list";
@@ -164,7 +163,9 @@ const prepareManagedCluster = async (
 
   log(`creating k3d cluster ${name}`);
   const startedAt = Date.now();
-  await provider.create(name, { agents: options.agents ?? 0, lifecycle, k3sArgs: options.k3sArgs });
+  await withProgress(`creating k3d cluster ${name}`, () =>
+    provider.create(name, { agents: options.agents ?? 0, lifecycle, k3sArgs: options.k3sArgs })
+  );
   const owned = { provider, name, directory };
   // From here a failure must still delete it, unless the user asked to keep it.
   if (!wantReuse) {
@@ -265,8 +266,11 @@ export const defineK8sGlobalSetup =
         await store?.releaseLock(holder).catch((error: unknown) => errors.push(error));
       }
       if (owned) {
-        log(`deleting k3d cluster ${owned.name}`);
-        await owned.provider.delete(owned.name).catch((error: unknown) => errors.push(error));
+        const { provider, name } = owned;
+        log(`deleting k3d cluster ${name}`);
+        await withProgress(`deleting k3d cluster ${name}`, () => provider.delete(name)).catch((error: unknown) =>
+          errors.push(error)
+        );
         await rm(owned.directory, { recursive: true, force: true });
       }
       removeSignalHandlers();

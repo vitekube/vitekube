@@ -1,4 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
+import type { Readable } from "node:stream";
 
 export type RunOptions = {
   cwd?: string;
@@ -11,6 +13,11 @@ export type RunOptions = {
   signal?: AbortSignal;
   /** Keeps arguments and output out of every error this command produces. */
   private?: boolean;
+  /**
+   * Called with each complete line of output while the command runs, without its line ending. The result still
+   * holds all of the output. Never called for private commands.
+   */
+  onLine?: (line: string, stream: "stdout" | "stderr") => void;
 };
 
 export type RunResult = {
@@ -25,6 +32,23 @@ export type RunResult = {
 };
 
 const KILL_GRACE_MS = 2_000;
+
+/** Splits a stream into lines as it arrives. A last line without a line ending is passed on at the end. */
+const forwardLines = (stream: Readable, onLine: (line: string) => void): void => {
+  const decoder = new StringDecoder("utf8");
+  let pending = "";
+  const send = (line: string): void => onLine(line.endsWith("\r") ? line.slice(0, -1) : line);
+  const take = (text: string): void => {
+    const lines = (pending + text).split("\n");
+    pending = lines.pop() ?? "";
+    lines.forEach(send);
+  };
+  stream.on("data", (chunk: Buffer) => take(decoder.write(chunk)));
+  stream.once("end", () => {
+    take(decoder.end());
+    if (pending) send(pending);
+  });
+};
 
 const ownedChildren = new Set<ChildProcess>();
 let exitHookInstalled = false;
@@ -112,6 +136,11 @@ export const run = (command: string, args: readonly string[], options: RunOption
   const stderrChunks: Buffer[] = [];
   child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
   child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+  const { onLine } = options;
+  if (onLine && !isPrivate) {
+    forwardLines(child.stdout, (line) => onLine(line, "stdout"));
+    forwardLines(child.stderr, (line) => onLine(line, "stderr"));
+  }
 
   let ending: "timeout" | "canceled" | undefined;
   let killTimer: NodeJS.Timeout | undefined;

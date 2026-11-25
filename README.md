@@ -272,6 +272,7 @@ Tests run on a real k3d cluster using vitekube.
 - After a failure, read the events, pods and logs printed above the error first.
 - To inspect a failed test's namespace: add `VITEKUBE_KEEP_ON_FAILURE=1` and use the command it prints.
 - To redo every image and stage: add `VITEKUBE_REBUILD=1`.
+- If setup seems stuck, add `VITEKUBE_VERBOSE=1` to see all output from k3d, Docker, Helm and kubectl.
 ```
 
 ## Test your whole system
@@ -449,6 +450,7 @@ If putting shared state back fails, the cluster is flagged as unusable. Later te
 | `VITEKUBE_REBUILD=1 npx vitest run`         | Redo every image and stage                    |
 | `VITEKUBE_CLUSTER=other npx vitest run`     | Use another cluster, such as one per worktree |
 | `VITEKUBE_KEEP_ON_FAILURE=1 npx vitest run` | Keep a failed test's namespace to inspect     |
+| `VITEKUBE_VERBOSE=1 npx vitest run`         | Show all output from setup commands           |
 
 ## Cluster options
 

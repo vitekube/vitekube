@@ -7,6 +7,7 @@ import type { ClusterStateStore } from "../cluster/state.ts";
 import { formatDuration } from "../core/duration.ts";
 import type { KubernetesClient, KubernetesTarget, NamedRef } from "../core/kubernetes.ts";
 import { runChecked } from "../core/process.ts";
+import { buildProgressLine, log, relayLines, withProgress } from "../core/progress.ts";
 
 export type ImageSpec = {
   name: string;
@@ -58,8 +59,6 @@ export type EnvironmentSpec = {
   stages: readonly StageSpec[];
 };
 
-const log = (message: string): void => console.log(`[vitekube] ${message}`);
-
 const elapsed = (startedAt: number): string => formatDuration(Date.now() - startedAt);
 
 const BUILD_TIMEOUT_MS = 900_000;
@@ -73,10 +72,20 @@ const imageRef = ({ name, tag = "local" }: ImageSpec): string => `${name}:${tag}
 const buildImage = async (image: ImageSpec, rootDir: string): Promise<string> => {
   const startedAt = Date.now();
   const ref = imageRef(image);
-  await runChecked(
-    "docker",
-    ["build", "--file", resolve(rootDir, image.dockerfile), "--tag", ref, resolve(rootDir, image.context)],
-    { cwd: rootDir, timeoutMs: BUILD_TIMEOUT_MS }
+  await withProgress(`building image ${ref}`, () =>
+    runChecked(
+      "docker",
+      [
+        "build",
+        "--progress=plain",
+        "--file",
+        resolve(rootDir, image.dockerfile),
+        "--tag",
+        ref,
+        resolve(rootDir, image.context),
+      ],
+      { cwd: rootDir, timeoutMs: BUILD_TIMEOUT_MS, onLine: relayLines(`image ${image.name}`, buildProgressLine) }
+    )
   );
   const { stdout } = await runChecked("docker", ["image", "inspect", "--format", "{{.Id}}", ref], {
     timeoutMs: APPLY_TIMEOUT_MS,
@@ -99,7 +108,10 @@ const helmKubeArgs = ({ kubeconfigPath, context }: KubernetesTarget): string[] =
   context,
 ];
 
-const installChart = async (chart: ChartSpec, context: StageContext): Promise<void> => {
+/** Relays every line in verbose mode and nothing otherwise, for commands whose output is rarely worth showing. */
+const quiet = (prefix: string) => relayLines(prefix, () => undefined);
+
+const installChart = async (stageName: string, chart: ChartSpec, context: StageContext): Promise<void> => {
   const { rootDir, target, k8s } = context;
   const namespace = chart.namespace ?? "default";
   const args = [
@@ -115,43 +127,62 @@ const installChart = async (chart: ChartSpec, context: StageContext): Promise<vo
     ...(chart.wait ? ["--wait", "--timeout", `${HELM_TIMEOUT_MS / 1000 - 10}s`] : []),
   ];
 
+  const label = `stage ${stageName}: helm upgrade ${chart.release} (namespace ${namespace})`;
+  log(label);
+  const helmOptions = { timeoutMs: HELM_TIMEOUT_MS, onLine: quiet("helm") };
   if (chart.privateValues) {
     const directory = await mkdtemp(join(tmpdir(), "vitekube-values-"));
     try {
       const path = join(directory, "values.json");
       await writeFile(path, JSON.stringify(await chart.privateValues(context)), { mode: 0o600 });
-      await runChecked("helm", [...args, "--values", path], { private: true, timeoutMs: HELM_TIMEOUT_MS });
+      await withProgress(label, () =>
+        runChecked("helm", [...args, "--values", path], { ...helmOptions, private: true })
+      );
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
   } else {
-    await runChecked("helm", args, { timeoutMs: HELM_TIMEOUT_MS });
+    await withProgress(label, () => runChecked("helm", args, helmOptions));
   }
 
   for (const name of chart.restart ?? []) {
+    log(`stage ${stageName}: restarting deployment ${namespace}/${name}`);
     await runChecked(
       "kubectl",
       [...kubeArgs(target), "rollout", "restart", `deployment/${name}`, "--namespace", namespace],
-      { timeoutMs: APPLY_TIMEOUT_MS }
+      { timeoutMs: APPLY_TIMEOUT_MS, onLine: quiet("kubectl") }
     );
-    await k8s.waitForRollout({ namespace, name }, { timeoutMs: ROLLOUT_TIMEOUT_MS });
+    await waitForRollout(stageName, { namespace, name }, k8s);
   }
+};
+
+const waitForRollout = async (stageName: string, deployment: NamedRef, k8s: KubernetesClient): Promise<void> => {
+  const label = `stage ${stageName}: waiting for deployment ${deployment.namespace}/${deployment.name}`;
+  log(label);
+  await withProgress(label, () => k8s.waitForRollout(deployment, { timeoutMs: ROLLOUT_TIMEOUT_MS }));
 };
 
 const runStage = async (stage: StageSpec, context: StageContext): Promise<void> => {
   const { rootDir, target, k8s } = context;
   for (const manifest of stage.manifests ?? []) {
+    log(`stage ${stage.name}: applying ${manifest}`);
     await runChecked("kubectl", [...kubeArgs(target), "apply", "--filename", resolve(rootDir, manifest)], {
       timeoutMs: APPLY_TIMEOUT_MS,
+      onLine: quiet("kubectl"),
     });
   }
   for (const deployment of stage.waitFor ?? []) {
-    await k8s.waitForRollout(deployment, { timeoutMs: ROLLOUT_TIMEOUT_MS });
+    await waitForRollout(stage.name, deployment, k8s);
   }
   for (const chart of stage.charts ?? []) {
-    await installChart(chart, context);
+    await installChart(stage.name, chart, context);
   }
-  await stage.run?.(context);
+  const { run } = stage;
+  if (run) {
+    const label = `stage ${stage.name}: running its run step`;
+    log(label);
+    await withProgress(label, () => run(context));
+  }
 };
 
 const stageFingerprint = (stage: StageSpec, rootDir: string, imageIds: Readonly<Record<string, string>>): string => {
@@ -198,18 +229,26 @@ export const prepareEnvironment = async (
   const force = process.env.VITEKUBE_REBUILD === "1";
 
   const startedAt = Date.now();
+  if (images.length > 0) {
+    log(`building ${images.length === 1 ? "image" : `${images.length} images`}: ${images.map(imageRef).join(", ")}`);
+  }
   const built = await Promise.all(images.map(async (image) => [image, await buildImage(image, rootDir)] as const));
   const imageIds = Object.fromEntries(built.map(([image, id]) => [image.name, id]));
 
+  const buildsTook = Date.now() - startedAt;
   const recorded = await store.readEnvironment();
   const changed = built.filter(([image, id]) => force || recorded.images[image.name] !== id).map(([image]) => image);
+  let importTook = 0;
   if (changed.length > 0) {
     const importStartedAt = Date.now();
-    await importImages?.(changed.map(imageRef));
+    const refs = changed.map(imageRef).join(", ");
+    log(`importing ${refs}`);
+    await withProgress(`importing ${refs}`, async () => importImages?.(changed.map(imageRef)));
     for (const image of changed) {
       await store.recordImage(image.name, imageIds[image.name] as string);
     }
-    log(`imported ${changed.map(imageRef).join(", ")} in ${elapsed(importStartedAt)}`);
+    importTook = Date.now() - importStartedAt;
+    log(`imported ${refs} in ${formatDuration(importTook)}`);
   } else if (images.length > 0) {
     log("images unchanged, nothing to import");
   }
@@ -224,6 +263,7 @@ export const prepareEnvironment = async (
     if (decision.run) await store.recordStage(decision.name, undefined);
   }
 
+  const stagesStartedAt = Date.now();
   const context: StageContext = { k8s, target, rootDir };
   for (const [index, stage] of spec.stages.entries()) {
     const decision = decisions[index]!;
@@ -237,5 +277,10 @@ export const prepareEnvironment = async (
     await store.recordStage(stage.name, fingerprints[stage.name]);
     log(`stage ${stage.name}: done in ${elapsed(stageStartedAt)}`);
   }
-  log(`environment ready in ${elapsed(startedAt)}`);
+  const parts = [
+    ...(images.length > 0 ? [`builds ${formatDuration(buildsTook)}`] : []),
+    ...(changed.length > 0 ? [`import ${formatDuration(importTook)}`] : []),
+    `stages ${elapsed(stagesStartedAt)}`,
+  ];
+  log(`environment ready in ${elapsed(startedAt)} (${parts.join(", ")})`);
 };
