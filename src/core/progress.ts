@@ -1,3 +1,5 @@
+import { styleText } from "node:util";
+
 import { formatDuration } from "./duration.ts";
 import type { RunOptions } from "./process.ts";
 
@@ -7,7 +9,11 @@ export const HEARTBEAT_MS = 15_000;
 /** Relayed lines longer than this are shortened, except in verbose mode. */
 const MAX_LINE_LENGTH = 160;
 
-export const log = (message: string): void => console.log(`[vitekube] ${message}`);
+/**
+ * Setup's progress, in gray so it reads as background work next to the test results. Colors are left out when
+ * output is not a terminal or `NO_COLOR` is set. Errors and warnings go through `console.error` and stay plain.
+ */
+export const log = (message: string): void => console.log(styleText("gray", `[vitekube] ${message}`));
 
 /** `VITEKUBE_VERBOSE=1` relays every output line of the commands that setup runs. */
 export const isVerbose = (): boolean => process.env.VITEKUBE_VERBOSE === "1";
